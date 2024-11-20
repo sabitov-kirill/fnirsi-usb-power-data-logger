@@ -195,13 +195,15 @@ def decode(data, calculate_crc, time_interval, alpha):
 def request_data(is_fnb58_or_fnb48s, ep_out):
     # Setup communication with power meter
     ep_out.write(b"\xaa\x81" + b"\x00" * 61 + b"\x8e")
+    time.sleep(0.01) 
     ep_out.write(b"\xaa\x82" + b"\x00" * 61 + b"\x96")
+    time.sleep(0.01)
 
     if is_fnb58_or_fnb48s:
         ep_out.write(b"\xaa\x82" + b"\x00" * 61 + b"\x96")
     else:
         ep_out.write(b"\xaa\x83" + b"\x00" * 61 + b"\x9e")
-
+    time.sleep(0.01)
 
 # Argument handling
 def str2bool(v: str) -> bool:
@@ -301,7 +303,7 @@ def main():
     print()  # Extra line so concatenation work better in gnuplot.
     print("timestamp sample_in_packet voltage_V current_A dp_V dn_V temp_C_ema energy_Ws capacity_As")
 
-    time.sleep(0.1)
+    time.sleep(0.01)
     refresh = 1.0 if is_fnb58_or_fnb48s else 0.003  # 1 s for FNB58 / FNB48S, 3 ms for others
     continue_time = time.time() + refresh
 
@@ -347,6 +349,7 @@ def main():
     except Exception as e:
         print(f"Exception {type(e)} {e}", file=sys.stderr)
         raise
+
 
 
 if __name__ == "__main__":
