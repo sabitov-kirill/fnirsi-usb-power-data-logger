@@ -3,6 +3,7 @@
 import logging
 import sys
 import os.path
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum, auto
@@ -70,6 +71,9 @@ class USBMeter:
         self.device = None
         self.ep_in = None
         self.ep_out = None
+        self.samples = []
+        self._stop_event = threading.Event()
+        self._thread = None
 
     def _setup_crc(self) -> Optional[Callable]:
         try:
@@ -110,7 +114,6 @@ class USBMeter:
         self._detach_kernel_driver(interface_num)
         
         # Configure device
-        self.device.set_configuration()
         cfg = self.device.get_active_configuration()
         intf = cfg[(interface_num, 0)]
 
@@ -163,7 +166,7 @@ class USBMeter:
             self.ep_out.write(prefix + b"\x00" * 61 + suffix)
             time.sleep(0.01)
 
-    def decode_packet(self, data: bytes, timestamp: float) -> Optional[MeasurementData]:
+    def decode_packet(self, data: bytes, timestamp: float) -> list[MeasurementData] | None:
         # Data is 64 bytes (64 bytes of HID data minus vendor constant 0xaa)
         # First byte is HID vendor constant 0xaa
         # Second byte is payload type:
@@ -189,7 +192,7 @@ class USBMeter:
             measurement = self._decode_measurement(data[offset:offset+15], base_time + i * 0.01)
             measurements.append(measurement)
 
-        return measurements[-1]  # Return most recent measurement
+        return measurements
 
     def _decode_measurement(self, data: bytes, timestamp: float) -> MeasurementData:
         voltage = int.from_bytes(data[0:4], 'little') / 100000
@@ -229,38 +232,42 @@ class USBMeter:
             )
             return False
         return True
+    
+    def _collect(self, measurements):
+        self.samples += measurements
 
     def run(self) -> None:
         print("timestamp voltage_V current_A dp_V dn_V temp_C_ema energy_Ws capacity_As")
         
         next_refresh = time.time() + self.device_info.refresh_rate
-        stop = False
 
-        while not stop:
+        while not self._stop_event.is_set():
             try:
                 data = self.ep_in.read(64, timeout=5000)
-                measurement = self.decode_packet(data, time.time())
-                
-                if measurement:
-                    print(
-                        f"{measurement.timestamp:.3f} {measurement.voltage:7.5f} "
-                        f"{measurement.current:7.5f} {measurement.dp:5.3f} "
-                        f"{measurement.dn:5.3f} {measurement.temperature:6.3f} "
-                        f"{measurement.energy:.6f} {measurement.capacity:.6f}"
-                    )
+                measurements = self.decode_packet(data, time.time())
+                if measurements:
+                    self._collect(measurements)
 
                 if time.time() >= next_refresh:
                     next_refresh = time.time() + self.device_info.refresh_rate
                     self.ep_out.write(b"\xaa\x83" + b"\x00" * 61 + b"\x9e")
 
-                if os.path.exists("fnirsi_stop"):
-                    stop = True
-
             except KeyboardInterrupt:
                 logger.info("Keyboard interrupt received, stopping...")
-                stop = True
+                self._stop_event.set()
 
         self._drain_buffer()
+
+    def start_session(self):
+        self._thread = threading.Thread(target=self.run)
+        self.samples.clear()
+        self._thread.start()
+
+    def end_session(self):
+        self._stop_event.set()
+        self._thread.join()
+        samples = self.samples.copy()
+        return samples
 
     def _drain_buffer(self) -> None:
         logger.debug("Draining USB buffer...")
